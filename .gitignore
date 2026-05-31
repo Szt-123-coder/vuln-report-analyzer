@@ -1,0 +1,10 @@
+﻿.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+**pycache**/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+.streamlit/secrets.toml
