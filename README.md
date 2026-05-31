@@ -8,7 +8,7 @@ A Python Streamlit app that turns unstructured vulnerability reports into valida
 - Convert report text into structured fields for vulnerability triage.
 - Validate every analysis result with a Pydantic schema.
 - Store raw reports and structured JSON results in SQLite.
-- Review previous analyses in a built-in History tab.
+- Review, search, filter, and sort previous analyses in a built-in History tab.
 - Run offline with mock analyzer mode.
 - Optionally use a real OpenAI-compatible LLM API.
 - Show clear errors when an LLM returns malformed JSON or schema-invalid data.
@@ -25,7 +25,19 @@ Each analysis includes:
 - `impact`
 - `evidence`: list of strings
 - `remediation`
+- `summary_evidence`
+- `severity_evidence`
+- `impact_evidence`
+- `remediation_evidence`
+- `affected_component_evidence`
 - `confidence`: float between `0` and `1`
+- `confidence_score`: float between `0` and `1`
+- `review_required`: boolean
+- `review_reason`: string
+
+The field-specific evidence values are short excerpts or paraphrased supporting statements from the original report. If support is not found, the app displays `Evidence not identified`.
+
+The app also flags analyses for human review when confidence is low, when High or Critical severity lacks strong evidence, or when required fields are missing or unclear.
 
 ## Setup
 

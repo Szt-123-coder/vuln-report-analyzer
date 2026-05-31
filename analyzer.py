@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import ValidationError
 
-from models import Severity, VulnerabilityAnalysis
+from models import EVIDENCE_NOT_IDENTIFIED, Severity, VulnerabilityAnalysis
 
 
 load_dotenv()
@@ -41,6 +41,37 @@ SEVERITY_KEYWORDS = {
 }
 
 
+LLM_OUTPUT_FIELDS = (
+    "title",
+    "summary",
+    "vulnerability_type",
+    "affected_component",
+    "severity",
+    "impact",
+    "evidence",
+    "remediation",
+    "summary_evidence",
+    "severity_evidence",
+    "impact_evidence",
+    "remediation_evidence",
+    "affected_component_evidence",
+    "confidence",
+    "confidence_score",
+    "review_required",
+    "review_reason",
+)
+
+REQUIRED_ANALYSIS_FIELDS = (
+    "title",
+    "summary",
+    "vulnerability_type",
+    "affected_component",
+    "severity",
+    "impact",
+    "remediation",
+)
+
+
 def analyze_report(report_text: str, use_llm: bool = False) -> VulnerabilityAnalysis:
     if use_llm:
         return analyze_with_llm(report_text)
@@ -53,9 +84,10 @@ def analyze_with_mock(report_text: str) -> VulnerabilityAnalysis:
     severity = _detect_severity(normalized, vulnerability_type)
     affected_component = _detect_affected_component(report_text)
     evidence = _extract_evidence(report_text)
+    confidence = _mock_confidence(normalized, evidence)
     title = _make_title(vulnerability_type, affected_component)
 
-    return VulnerabilityAnalysis(
+    analysis = VulnerabilityAnalysis(
         title=title,
         summary=(
             f"The report appears to describe {vulnerability_type.lower()} affecting "
@@ -68,8 +100,24 @@ def analyze_with_mock(report_text: str) -> VulnerabilityAnalysis:
         impact=_mock_impact(severity, vulnerability_type, affected_component),
         evidence=evidence,
         remediation=_mock_remediation(vulnerability_type),
-        confidence=_mock_confidence(normalized, evidence),
+        summary_evidence=_evidence_or_default(evidence),
+        severity_evidence=_find_severity_evidence(report_text, evidence),
+        impact_evidence=_find_impact_evidence(report_text, evidence),
+        remediation_evidence=_find_remediation_evidence(
+            report_text,
+            evidence,
+            vulnerability_type,
+        ),
+        affected_component_evidence=_find_affected_component_evidence(
+            report_text,
+            affected_component,
+        ),
+        confidence=confidence,
+        confidence_score=confidence,
+        review_required=False,
+        review_reason="No review required.",
     )
+    return _apply_review_rules(analysis)
 
 
 def analyze_with_llm(report_text: str) -> VulnerabilityAnalysis:
@@ -96,10 +144,23 @@ def analyze_with_llm(report_text: str) -> VulnerabilityAnalysis:
                         "You convert vulnerability reports into validated JSON for triage. "
                         "Return only one JSON object with these exact keys: title, summary, "
                         "vulnerability_type, affected_component, severity, impact, evidence, "
-                        "remediation, confidence. severity must be Low, Medium, High, or "
-                        "Critical. evidence must be an array of strings. remediation must "
-                        "be a single string, not an array. confidence must be a number from "
-                        "0 to 1."
+                        "remediation, summary_evidence, severity_evidence, impact_evidence, "
+                        "remediation_evidence, affected_component_evidence, confidence, "
+                        "confidence_score, review_required, review_reason. "
+                        "severity must be Low, Medium, High, or Critical. evidence must be "
+                        "an array of strings. remediation must be a single string, not an "
+                        "array. For summary_evidence, severity_evidence, impact_evidence, "
+                        "remediation_evidence, and affected_component_evidence, include a "
+                        "short excerpt or paraphrased supporting statement from the input "
+                        "report for that conclusion. Use 'Evidence not identified' only "
+                        "when the report does not support that specific conclusion. "
+                        "confidence_score must be a number from 0 to 1 based on the "
+                        "clarity of the original report, whether evidence is available, "
+                        "whether impact and affected_component are clearly described, and "
+                        "whether remediation is specific. Set confidence to the same value "
+                        "as confidence_score for compatibility. review_required must be a "
+                        "boolean, and review_reason must be a concise string explaining "
+                        "why human review is or is not needed."
                     ),
                 },
                 {
@@ -124,12 +185,103 @@ def _parse_llm_json(content: str) -> VulnerabilityAnalysis:
             "The LLM response was not valid JSON. Try again or use mock mode."
         ) from exc
 
+    missing_fields = [field for field in LLM_OUTPUT_FIELDS if field not in payload]
+    if "confidence_score" not in payload and "confidence" in payload:
+        payload["confidence_score"] = payload["confidence"]
+    if "confidence" not in payload and "confidence_score" in payload:
+        payload["confidence"] = payload["confidence_score"]
+    payload.setdefault("review_required", False)
+    payload.setdefault("review_reason", "")
+
     try:
-        return VulnerabilityAnalysis.model_validate(payload)
+        analysis = VulnerabilityAnalysis.model_validate(payload)
     except ValidationError as exc:
         raise InvalidLLMResponseError(
             f"The LLM returned JSON, but it did not match the expected schema: {exc}"
         ) from exc
+    return _apply_review_rules(analysis, missing_fields)
+
+
+def _apply_review_rules(
+    analysis: VulnerabilityAnalysis,
+    missing_fields: List[str] | None = None,
+) -> VulnerabilityAnalysis:
+    reasons: List[str] = []
+
+    if analysis.review_required:
+        if analysis.review_reason.strip() and analysis.review_reason != "No review required.":
+            reasons.append(analysis.review_reason.strip())
+        else:
+            reasons.append("Analyzer marked this result for human review.")
+
+    if missing_fields:
+        reasons.append(f"Missing fields in analyzer output: {', '.join(missing_fields)}.")
+
+    missing_required = [
+        field
+        for field in REQUIRED_ANALYSIS_FIELDS
+        if not str(getattr(analysis, field, "")).strip()
+    ]
+    if missing_required:
+        reasons.append(f"Required analysis fields are missing: {', '.join(missing_required)}.")
+
+    if analysis.affected_component == "Unspecified application component":
+        reasons.append("Affected component was not clearly identified.")
+
+    if analysis.confidence_score < 0.7:
+        reasons.append("Confidence score is below 0.70.")
+
+    if analysis.severity in {Severity.HIGH, Severity.CRITICAL} and _severity_evidence_is_weak(
+        analysis.severity_evidence
+    ):
+        reasons.append("High or Critical severity lacks strong supporting severity evidence.")
+
+    if reasons:
+        return analysis.model_copy(
+            update={
+                "review_required": True,
+                "review_reason": _join_unique_reasons(reasons),
+            }
+        )
+
+    return analysis.model_copy(
+        update={
+            "review_required": False,
+            "review_reason": "No review required.",
+        }
+    )
+
+
+def _join_unique_reasons(reasons: List[str]) -> str:
+    unique: List[str] = []
+    for reason in reasons:
+        cleaned = reason.strip()
+        if cleaned and cleaned not in unique:
+            unique.append(cleaned)
+    return " ".join(unique) or "Human review required."
+
+
+def _severity_evidence_is_weak(value: str) -> bool:
+    cleaned = value.strip()
+    if not cleaned or cleaned == EVIDENCE_NOT_IDENTIFIED:
+        return True
+
+    normalized = cleaned.lower()
+    severity_markers = (
+        "severity",
+        "cvss",
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "remote code",
+        "rce",
+        "privilege escalation",
+        "sql injection",
+        "authentication bypass",
+        "system compromise",
+    )
+    return not any(marker in normalized for marker in severity_markers)
 
 
 def _extract_json_object(content: str) -> str:
@@ -205,6 +357,98 @@ def _extract_evidence(report_text: str) -> List[str]:
 
     compact = re.sub(r"\s+", " ", report_text).strip()
     return [compact[:300] or "Report text was provided but no specific evidence was detected."]
+
+
+def _evidence_or_default(evidence: List[str]) -> str:
+    return evidence[0] if evidence else EVIDENCE_NOT_IDENTIFIED
+
+
+def _find_line_with_keywords(report_text: str, keywords: tuple[str, ...]) -> str:
+    for line in report_text.splitlines():
+        cleaned = line.strip("-* \t")
+        if cleaned and any(keyword in cleaned.lower() for keyword in keywords):
+            return cleaned[:300]
+    return EVIDENCE_NOT_IDENTIFIED
+
+
+def _find_severity_evidence(report_text: str, evidence: List[str]) -> str:
+    severity_evidence = _find_line_with_keywords(
+        report_text,
+        (
+            "severity",
+            "cvss",
+            "critical",
+            "high",
+            "medium",
+            "low",
+            "remote code execution",
+            "privilege escalation",
+        ),
+    )
+    if severity_evidence != EVIDENCE_NOT_IDENTIFIED:
+        return severity_evidence
+    return _evidence_or_default(evidence)
+
+
+def _find_impact_evidence(report_text: str, evidence: List[str]) -> str:
+    impact_evidence = _find_line_with_keywords(
+        report_text,
+        (
+            "impact",
+            "unauthorized",
+            "sensitive",
+            "compromise",
+            "leak",
+            "exposed",
+            "data",
+            "admin",
+        ),
+    )
+    if impact_evidence != EVIDENCE_NOT_IDENTIFIED:
+        return impact_evidence
+    return _evidence_or_default(evidence)
+
+
+def _find_remediation_evidence(
+    report_text: str,
+    evidence: List[str],
+    vulnerability_type: str,
+) -> str:
+    remediation_evidence = _find_line_with_keywords(
+        report_text,
+        (
+            "remediation",
+            "recommendation",
+            "mitigation",
+            "fix",
+            "patch",
+            "parameterized",
+            "sanitize",
+            "validate",
+        ),
+    )
+    if remediation_evidence != EVIDENCE_NOT_IDENTIFIED:
+        return remediation_evidence
+    if evidence:
+        return (
+            f"The remediation is based on report evidence indicating "
+            f"{vulnerability_type.lower()}: {evidence[0]}"
+        )[:300]
+    return EVIDENCE_NOT_IDENTIFIED
+
+
+def _find_affected_component_evidence(
+    report_text: str,
+    affected_component: str,
+) -> str:
+    if affected_component == "Unspecified application component":
+        return EVIDENCE_NOT_IDENTIFIED
+
+    for line in report_text.splitlines():
+        cleaned = line.strip("-* \t")
+        if cleaned and affected_component.lower() in cleaned.lower():
+            return cleaned[:300]
+    return f"Report identified the affected component as {affected_component}."
 
 
 def _make_title(vulnerability_type: str, affected_component: str) -> str:

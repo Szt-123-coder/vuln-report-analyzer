@@ -4,6 +4,9 @@ from typing import Any, List
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+EVIDENCE_NOT_IDENTIFIED = "Evidence not identified"
+
+
 class Severity(str, Enum):
     LOW = "Low"
     MEDIUM = "Medium"
@@ -22,7 +25,15 @@ class VulnerabilityAnalysis(BaseModel):
     impact: str = Field(..., min_length=10)
     evidence: List[str] = Field(default_factory=list)
     remediation: str = Field(..., min_length=10)
+    summary_evidence: str = Field(default=EVIDENCE_NOT_IDENTIFIED)
+    severity_evidence: str = Field(default=EVIDENCE_NOT_IDENTIFIED)
+    impact_evidence: str = Field(default=EVIDENCE_NOT_IDENTIFIED)
+    remediation_evidence: str = Field(default=EVIDENCE_NOT_IDENTIFIED)
+    affected_component_evidence: str = Field(default=EVIDENCE_NOT_IDENTIFIED)
     confidence: float = Field(..., ge=0.0, le=1.0)
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    review_required: bool = False
+    review_reason: str = Field(default="No review required.")
 
     @field_validator("remediation", mode="before")
     @classmethod
@@ -32,12 +43,30 @@ class VulnerabilityAnalysis(BaseModel):
         return value
 
     @field_validator(
+        "summary_evidence",
+        "severity_evidence",
+        "impact_evidence",
+        "remediation_evidence",
+        "affected_component_evidence",
+        mode="before",
+    )
+    @classmethod
+    def normalize_field_evidence(cls, value: Any) -> str:
+        if value is None:
+            return EVIDENCE_NOT_IDENTIFIED
+        if isinstance(value, list):
+            value = " ".join(str(item).strip() for item in value if str(item).strip())
+        cleaned = str(value).strip()
+        return cleaned or EVIDENCE_NOT_IDENTIFIED
+
+    @field_validator(
         "title",
         "summary",
         "vulnerability_type",
         "affected_component",
         "impact",
         "remediation",
+        "review_reason",
     )
     @classmethod
     def strip_required_text(cls, value: str) -> str:
