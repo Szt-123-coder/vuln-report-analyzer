@@ -97,8 +97,9 @@ def analyze_with_llm(report_text: str) -> VulnerabilityAnalysis:
                         "Return only one JSON object with these exact keys: title, summary, "
                         "vulnerability_type, affected_component, severity, impact, evidence, "
                         "remediation, confidence. severity must be Low, Medium, High, or "
-                        "Critical. evidence must be an array of strings. confidence must be "
-                        "a number from 0 to 1."
+                        "Critical. evidence must be an array of strings. remediation must "
+                        "be a single string, not an array. confidence must be a number from "
+                        "0 to 1."
                     ),
                 },
                 {
