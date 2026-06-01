@@ -9,6 +9,8 @@ A Python Streamlit app that turns unstructured vulnerability reports into valida
 - Validate every analysis result with a Pydantic schema.
 - Store raw reports and structured JSON results in SQLite.
 - Review, search, filter, and sort previous analyses in a built-in History tab.
+- Retrieve the highest-severity reports using severity priority ranking.
+- Compare saved reports side by side with a rule-based comparison summary.
 - Run offline with mock analyzer mode.
 - Optionally use a real OpenAI-compatible LLM API.
 - Show clear errors when an LLM returns malformed JSON or schema-invalid data.
@@ -38,6 +40,23 @@ Each analysis includes:
 The field-specific evidence values are short excerpts or paraphrased supporting statements from the original report. If support is not found, the app displays `Evidence not identified`.
 
 The app also flags analyses for human review when confidence is low, when High or Critical severity lacks strong evidence, or when required fields are missing or unclear.
+
+## History, Severity Retrieval, and Comparison
+
+The History tab supports keyword search, severity filtering, affected component filtering, review status filtering, and created time sorting.
+
+The Highest Severity tab ranks saved reports with this priority:
+
+- `Critical` = `5`
+- `High` = `4`
+- `Medium` = `3`
+- `Low` = `2`
+- `Informational` / `Info` = `1`
+- `Unknown` = `0`
+
+Reports in that view are sorted by severity rank, then confidence score, then newest creation time.
+
+The Compare Reports tab lets you select two or more saved reports and review title, severity, severity evidence, confidence score, review status, affected component, impact, remediation, and creation time side by side. Its rule-based comparison summary provides a priority recommendation, risk difference summary, evidence quality check, remediation comparison, and possible duplicate or similarity detection. Duplicate or related-report detection requires stronger structural similarity, such as the same vulnerability type, the same or very similar affected component, or similar title keywords paired with a similar remediation theme. Generic evidence overlap, impact wording, or matching severity can support the comparison, but they are not enough on their own. The comparison does not make another LLM call.
 
 ## Setup
 
